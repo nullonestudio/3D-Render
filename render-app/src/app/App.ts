@@ -145,6 +145,8 @@ export class App {
       this._updateSafeFrame();
     }).observe(viewportContainer);
 
+    appState.subscribe(() => this._updateSafeFrame());
+
     // ---- Render loop ----
     this._viewportRenderer.startLoop(() => this._tick());
   }
@@ -213,14 +215,22 @@ export class App {
       this._loading.update(0.85, 'Centering model...');
       const box = centerAndNormalize(model);
 
+      // Auto-fit aspect ratio if model is wide, avoiding empty borders in 1:1
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      if (size.x > size.y * 1.25 && appState.settings.quality.aspectRatio === '1:1') {
+        appState.update(s => { s.quality.aspectRatio = '16:9'; });
+      }
+
       this._sceneManager.modelRoot.add(model);
       this._currentModel = model;
 
       // Fit shadow camera
       this._sceneManager.fitShadowCamera(box);
 
-      // Frame camera
-      this._cameraManager.frameModel(box);
+      // Frame camera snugly to fill ~85% of the safe frame
+      const aspect = this._getRenderAspect();
+      this._cameraManager.frameModel(box, aspect);
 
       // Attach gizmo
       this._gizmoManager.attach(this._sceneManager.modelRoot);
@@ -298,8 +308,21 @@ export class App {
   private _frameModel(): void {
     if (this._currentModel) {
       const box = new THREE.Box3().setFromObject(this._sceneManager.modelRoot);
-      this._cameraManager.frameModel(box);
+      const aspect = this._getRenderAspect();
+      this._cameraManager.frameModel(box, aspect);
     }
+  }
+
+  private _getRenderAspect(): number {
+    const q = appState.settings.quality;
+    if (q.resolution === 'custom') {
+      return q.customWidth / q.customHeight;
+    }
+    const ratioMap: Record<string, [number, number]> = {
+      '1:1': [1, 1], '16:9': [16, 9], '4:3': [4, 3], '3:2': [3, 2]
+    };
+    const [w, h] = ratioMap[q.aspectRatio] ?? [16, 9];
+    return w / h;
   }
 
   private _onKey(e: KeyboardEvent): void {

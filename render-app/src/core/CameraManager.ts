@@ -72,17 +72,30 @@ export class CameraManager {
     this._orthoCamera.updateProjectionMatrix();
   }
 
-  frameModel(box: THREE.Box3): void {
+  frameModel(box: THREE.Box3, aspect?: number): void {
     const center = new THREE.Vector3();
     const size = new THREE.Vector3();
     box.getCenter(center);
     box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = this._perspCamera.fov * (Math.PI / 180);
-    const distance = (maxDim / 2) / Math.tan(fov / 2) * 1.8;
+
     const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    if (dir.lengthSq() < 0.001) dir.set(2, 1.5, 3).normalize();
+
+    // Effective aspect ratio: use render safe-frame aspect if available
+    const a = (aspect && aspect > 0) ? aspect : this._aspect;
+
+    const vFov = THREE.MathUtils.degToRad(this._perspCamera.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * a);
+
+    // Calculate distance needed so model tightly fills ~85% of frame (no wasted pixels)
+    const distY = (size.y / 2) / Math.tan(vFov / 2);
+    const distX = (Math.max(size.x, size.z) / 2) / Math.tan(hFov / 2);
+    const distDiag = (size.length() / 2) / Math.tan(vFov / 2);
+
+    const distance = Math.max(distY, distX, distDiag * 0.75) * 1.15;
+
     this.controls.target.copy(center);
-    this.camera.position.copy(center).addScaledVector(dir, distance);
+    this.camera.position.copy(center).addScaledVector(dir, Math.max(distance, 0.5));
     this.controls.update();
   }
 

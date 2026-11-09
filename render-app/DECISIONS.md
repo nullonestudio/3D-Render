@@ -65,3 +65,19 @@ This file records every ambiguous choice made during implementation, per the REA
 ## D-016: Realistic default albedo and unclipped shadows
 **Context:** Untextured FBX materials often import with pure 1.0 white diffuse albedo, which reflects 100% of light and blows out in PBR. Shadow camera frustums were also clipped at `maxDim * 1.5`.
 **Decision:** Clamped untextured diffuse colors to 0.78, added a shadow softness radius, widened the shadow camera frustum to `maxDim * 2.2` with `normalBias`, added `light.target` into the scene graph, and added a toggleable ground plane shadow catcher.
+
+## D-017: Bundled CC0 Studio HDRI
+**Context:** The user observed that parts had no reflections, with black parts appearing as flat dark gray. Without an environment map containing structured light sources (softboxes, rim lights, high contrast), glossy surfaces reflect flat gray walls.
+**Decision:** Downloaded and bundled a high-quality 1K CC0 studio photography HDRI (`studio_small_09_1k.hdr` from Poly Haven) to `public/hdri/default.hdr`. This provides rich studio softbox reflections, rim highlights, and high-contrast ambient reflections.
+
+## D-018: Crevice contact darkening and shadow bias tuning
+**Context:** Clips, ribs, and recesses had no contact shadowing or ambient occlusion, looking flat.
+**Decision:** Identified that `dirLight.shadow.normalBias = 0.02` was larger than thin mechanical features (ribs, clips), causing shadow peter-panning that completely erased self-shadowing in crevices. Decreased `normalBias` to `0.002` and `bias` to `-0.0002`, and replaced flat `AmbientLight(0xffffff, 0.15)` with a subtle hemisphere bounce (`0x2a2a2a` sky, `0x080808` ground) so recessed cavities naturally drop into deep contact shadows.
+
+## D-019: VSM shadows and area-light multi-sample penumbra
+**Context:** The shadow in the render was still a thin, hard black streak because Three.js `PCFSoftShadowMap` uses a fixed 1-texel filter that ignores `shadow.radius`.
+**Decision:** Switched shadow map type to `THREE.VSMShadowMap` with 16 blur samples. In `OfflineRenderer`, added area-light jitter accumulation across multi-sample passes (4, 16, 64 samples) proportional to `shadowSoftness`. Contact points remain crisp and black, while distant shadows diffuse into a smooth physical penumbra.
+
+## D-020: Snug camera framing and auto 16:9 aspect ratio
+**Context:** In 1:1 square output, wide parts left roughly two-thirds of the 8K canvas empty.
+**Decision:** In `CameraManager.frameModel`, replaced the oversized `maxDim * 1.8` bounding cube distance with exact view-frustum projection calculation using a tight 1.15 padding factor. When an FBX model is imported with width > 1.25× height, the app automatically switches to `16:9` so the wide part fills the frame. Added live Surface finish sliders (Roughness, Metalness) to the Properties Panel.

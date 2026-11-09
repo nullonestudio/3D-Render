@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+import { appState } from '../app/state';
 
 export type ImportProgress = (stage: string, pct: number) => void;
 
@@ -57,6 +58,8 @@ function fixModel(object: THREE.Group): void {
 }
 
 function convertMaterial(mat: THREE.Material): THREE.Material {
+  const globalMat = appState.settings.material;
+
   if (
     mat instanceof THREE.MeshPhongMaterial ||
     mat instanceof THREE.MeshLambertMaterial ||
@@ -64,15 +67,32 @@ function convertMaterial(mat: THREE.Material): THREE.Material {
   ) {
     const matAny = mat as any;
 
-    // Realistic PBR albedo: pure 1.0 white diffuse without texture blows out in PBR.
-    // Tone it down to ~0.78 if untextured; keep 1.0 if textured so map isn't tinted.
     let baseColor = matAny.color ? matAny.color.clone() : new THREE.Color(0.8, 0.8, 0.8);
-    if (!matAny.map) {
-      if (baseColor.r > 0.95 && baseColor.g > 0.95 && baseColor.b > 0.95) {
-        baseColor.setRGB(0.78, 0.78, 0.78);
+    let roughness = globalMat.roughness;
+    let metalness = globalMat.metalness;
+
+    const lum = 0.299 * baseColor.r + 0.587 * baseColor.g + 0.114 * baseColor.b;
+
+    if (lum < 0.25) {
+      // Dark / black components: give glossy/satin sheen so reflections of softboxes show
+      roughness = Math.min(0.22, globalMat.roughness);
+      metalness = Math.max(0.08, globalMat.metalness);
+    } else if (!matAny.map) {
+      // Light untextured parts: avoid 100% pure diffuse blowout; give crisp sheen
+      if (baseColor.r > 0.92 && baseColor.g > 0.92 && baseColor.b > 0.92) {
+        baseColor.setRGB(0.8, 0.8, 0.8);
       }
+      roughness = Math.min(0.32, globalMat.roughness);
     } else {
       matAny.map.colorSpace = THREE.SRGBColorSpace;
+    }
+
+    if (mat instanceof THREE.MeshPhongMaterial && mat.shininess > 10) {
+      roughness = Math.max(0.08, Math.min(0.6, 1 - (mat.shininess / 150)));
+      metalness = Math.min(1.0, (mat as any).reflectivity ?? metalness);
+      if (matAny.specularMap) {
+        matAny.specularMap.colorSpace = THREE.SRGBColorSpace;
+      }
     }
 
     const stdMat = new THREE.MeshStandardMaterial({
@@ -83,8 +103,8 @@ function convertMaterial(mat: THREE.Material): THREE.Material {
       opacity: mat.opacity,
       side: mat.side,
       wireframe: (mat as any).wireframe ?? false,
-      roughness: 0.55,
-      metalness: 0.05,
+      roughness,
+      metalness,
     });
 
     if (matAny.map) stdMat.map = matAny.map;
@@ -100,12 +120,6 @@ function convertMaterial(mat: THREE.Material): THREE.Material {
     if (matAny.alphaMap) stdMat.alphaMap = matAny.alphaMap;
     if (matAny.envMap) stdMat.envMap = matAny.envMap;
 
-    if (mat instanceof THREE.MeshPhongMaterial) {
-      stdMat.roughness = Math.max(0.1, 1 - (mat.shininess / 200));
-      stdMat.metalness = Math.min(1.0, (mat as any).reflectivity ?? 0.05);
-      if (matAny.specularMap) stdMat.roughnessMap = matAny.specularMap;
-    }
-
     mat.dispose();
     return stdMat;
   }
@@ -115,9 +129,11 @@ function convertMaterial(mat: THREE.Material): THREE.Material {
       (mat as any).map.colorSpace = THREE.SRGBColorSpace;
     } else {
       const c = (mat as THREE.MeshStandardMaterial).color;
-      if (c && c.r > 0.95 && c.g > 0.95 && c.b > 0.95) {
-        c.setRGB(0.78, 0.78, 0.78);
+      if (c && c.r > 0.92 && c.g > 0.92 && c.b > 0.92) {
+        c.setRGB(0.8, 0.8, 0.8);
       }
+      mat.roughness = globalMat.roughness;
+      mat.metalness = globalMat.metalness;
     }
     return mat;
   }

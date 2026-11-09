@@ -38,7 +38,7 @@ export class Panel {
     <label>Intensity<input type="range" id="p-light-intensity" min="0" max="5" step="0.1" value="${s.light.intensity}"><span id="v-light-intensity">${s.light.intensity.toFixed(1)}</span></label>
     <label>Azimuth<input type="range" id="p-light-azimuth" min="0" max="360" step="1" value="${s.light.azimuth}"><span id="v-light-azimuth">${s.light.azimuth}°</span></label>
     <label>Elevation<input type="range" id="p-light-elevation" min="5" max="90" step="1" value="${s.light.elevation}"><span id="v-light-elevation">${s.light.elevation}°</span></label>
-    <label>Softness<input type="range" id="p-light-softness" min="1" max="5" step="0.1" value="${s.light.shadowSoftness}"><span id="v-light-softness">${s.light.shadowSoftness.toFixed(1)}</span></label>
+    <label>Softness<input type="range" id="p-light-softness" min="1" max="8" step="0.2" value="${s.light.shadowSoftness}"><span id="v-light-softness">${s.light.shadowSoftness.toFixed(1)}</span></label>
     <label class="checkbox-label"><input type="checkbox" id="p-ground-visible" ${s.light.groundVisible !== false ? 'checked' : ''}> Ground Shadow Catcher</label>
   </details>
 
@@ -50,8 +50,14 @@ export class Panel {
     <label class="checkbox-label" title="Toggles visible 360 skybox in viewport"><input type="checkbox" id="p-env-bg" ${s.environment.showBackground ? 'checked' : ''}> Show Skybox (Viewport)</label>
   </details>
 
+  <!-- Surface / Material Finish -->
+  <details open><summary>✨ Surface & Sheen</summary>
+    <label>Roughness<input type="range" id="p-mat-roughness" min="0.05" max="1.0" step="0.05" value="${s.material.roughness}"><span id="v-mat-roughness">${s.material.roughness.toFixed(2)}</span></label>
+    <label>Metalness<input type="range" id="p-mat-metalness" min="0.0" max="1.0" step="0.05" value="${s.material.metalness}"><span id="v-mat-metalness">${s.material.metalness.toFixed(2)}</span></label>
+  </details>
+
   <!-- Quality -->
-  <details open><summary>⚙️ Quality</summary>
+  <details open><summary>⚙️ Quality & Framing</summary>
     <label>Atlas Quality<select id="p-atlas-quality">
       <option value="low" ${s.quality.atlasQuality === 'low' ? 'selected' : ''}>Low</option>
       <option value="medium" ${s.quality.atlasQuality === 'medium' ? 'selected' : ''}>Medium</option>
@@ -60,9 +66,9 @@ export class Panel {
     </select></label>
     <label>AA Samples<select id="p-pixel-quality">
       <option value="1" ${s.quality.pixelQuality === 1 ? 'selected' : ''}>1 (Off)</option>
-      <option value="4" ${s.quality.pixelQuality === 4 ? 'selected' : ''}>4</option>
-      <option value="16" ${s.quality.pixelQuality === 16 ? 'selected' : ''}>16</option>
-      <option value="64" ${s.quality.pixelQuality === 64 ? 'selected' : ''}>64</option>
+      <option value="4" ${s.quality.pixelQuality === 4 ? 'selected' : ''}>4 (Soft Area Light)</option>
+      <option value="16" ${s.quality.pixelQuality === 16 ? 'selected' : ''}>16 (High Quality)</option>
+      <option value="64" ${s.quality.pixelQuality === 64 ? 'selected' : ''}>64 (Ultra Soft)</option>
     </select></label>
     <label>Resolution<select id="p-resolution">
       <option value="1k" ${s.quality.resolution === '1k' ? 'selected' : ''}>1K</option>
@@ -72,10 +78,10 @@ export class Panel {
       <option value="custom" ${s.quality.resolution === 'custom' ? 'selected' : ''}>Custom</option>
     </select></label>
     <label>Aspect Ratio<select id="p-aspect">
-      <option value="1:1" ${s.quality.aspectRatio === '1:1' ? 'selected' : ''}>1:1</option>
-      <option value="16:9" ${s.quality.aspectRatio === '16:9' ? 'selected' : ''}>16:9</option>
-      <option value="4:3" ${s.quality.aspectRatio === '4:3' ? 'selected' : ''}>4:3</option>
-      <option value="3:2" ${s.quality.aspectRatio === '3:2' ? 'selected' : ''}>3:2</option>
+      <option value="16:9" ${s.quality.aspectRatio === '16:9' ? 'selected' : ''}>16:9 (Wide / Recommended)</option>
+      <option value="3:2" ${s.quality.aspectRatio === '3:2' ? 'selected' : ''}>3:2 (Photo)</option>
+      <option value="4:3" ${s.quality.aspectRatio === '4:3' ? 'selected' : ''}>4:3 (Standard)</option>
+      <option value="1:1" ${s.quality.aspectRatio === '1:1' ? 'selected' : ''}>1:1 (Square)</option>
       <option value="custom" ${s.quality.aspectRatio === 'custom' ? 'selected' : ''}>Custom</option>
     </select></label>
     <div id="custom-res-row" style="display:${s.quality.resolution === 'custom' ? 'block' : 'none'}">
@@ -83,6 +89,7 @@ export class Panel {
       <label>Height<input type="number" id="p-custom-h" value="${s.quality.customHeight}" min="64" max="16384"></label>
     </div>
     <label class="checkbox-label" title="Render PNG with transparent alpha background"><input type="checkbox" id="p-transparent-bg" ${s.quality.transparentBackground ? 'checked' : ''}> Transparent PNG Output</label>
+    <label class="checkbox-label" title="Darkens contacts and recesses"><input type="checkbox" id="p-quality-ao" ${s.quality.ambientOcclusion !== false ? 'checked' : ''}> Contact Shadows & AO</label>
   </details>
 
   <!-- Camera -->
@@ -107,7 +114,7 @@ export class Panel {
       </div>
       <div id="bookmark-list"></div>
       <button id="p-cam-reset" style="margin-top:6px;width:100%">Reset Camera</button>
-      <button id="p-cam-frame" style="margin-top:4px;width:100%">Frame Model</button>
+      <button id="p-cam-frame" style="margin-top:4px;width:100%">Fit Model to Frame</button>
     </div>
   </details>
 </div>`;
@@ -177,6 +184,17 @@ export class Panel {
       appState.update(s => { s.environment.showBackground = (e.target as HTMLInputElement).checked; });
     });
 
+    // Material finish
+    this._bindRange('#p-mat-roughness', '#v-mat-roughness', (v) => {
+      appState.update(s => { s.material.roughness = v; });
+      return v.toFixed(2);
+    });
+    this._bindRange('#p-mat-metalness', '#v-mat-metalness', (v) => {
+      appState.update(s => { s.material.metalness = v; });
+      return v.toFixed(2);
+    });
+
+    // Quality
     this._bind('#p-atlas-quality', 'change', (v) => appState.update(s => { s.quality.atlasQuality = v as any; }));
     this._bind('#p-pixel-quality', 'change', (v) => appState.update(s => { s.quality.pixelQuality = parseInt(v) as any; }));
     this._bind('#p-resolution', 'change', (v) => {
@@ -193,6 +211,9 @@ export class Panel {
     });
     this._el.querySelector('#p-transparent-bg')?.addEventListener('change', (e) => {
       appState.update(s => { s.quality.transparentBackground = (e.target as HTMLInputElement).checked; });
+    });
+    this._el.querySelector('#p-quality-ao')?.addEventListener('change', (e) => {
+      appState.update(s => { s.quality.ambientOcclusion = (e.target as HTMLInputElement).checked; });
     });
 
     this._bind('#p-cam-mode', 'change', (v) => appState.update(s => { s.camera.mode = v as any; }));

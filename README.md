@@ -1,243 +1,205 @@
-# Render App: Fix Pass v0.2
+# Render App: Quality Pass v0.3 (AO + Realistic Reflections)
 
-> **Instructions for the AI agent:** The prototype from `README.md` runs, but three visible defects make the output unusable. Read this entire file, study the reference images, reproduce each defect, find the root cause with the debug steps given, then apply the fixes in the order in §8. Do not rewrite the architecture. Fix what is listed, verify with the acceptance tests in §6, and log every assumption in `DECISIONS.md`.
+> **Instructions for the AI agent:** The app now produces clean 8K renders (tiling, accumulation, tone mapping and helper hiding work). **Do not break any of that.** This pass adds the missing ingredients of a realistic render: ambient occlusion, believable reflections, soft shadows, and an optional path-traced **Ultra** mode. Read the whole file, study the reference renders, check the current state of each item in §2 before changing code (some may be half-implemented from `README_FIXES.md`), then follow the order in §9. Log every assumption and every library version you pick in `DECISIONS.md`.
 
 ## 0. Reference files (user must place these in the repo)
 
 ```
 docs/reference/
-├── expected.jpeg           # TARGET look (a different model; match the LOOK, not the geometry)
-├── current_render.png      # 4K output with the bugs
-└── current_viewport.png    # viewport screenshot with the bugs
+├── expected.jpeg                        # target LOOK (different model; match lighting, AO, shadow, finish)
+├── render_8k_20261109_113148.png        # current 8K output A
+└── render_8k_20261109_113416.png        # current 8K output B
 ```
 
-Open all three before changing code. If a file is missing, stop and ask the user to add it.
+If any file is missing, ask the user to add it before starting.
 
-## 1. What the target looks like (`expected.jpeg`)
+## 1. What "realistic" means here (measurable descriptors)
 
-The expected image shows a different object (a plastic panel). Match these qualities:
+Compared with `expected.jpeg`, the target render has:
 
-- **Background:** flat, solid neutral dark gray (about `#454545`). No gradient, no vignette, no visible HDRI.
-- **Model shading:** light-gray matte surface with a smooth light-to-shadow gradient across forms. **Nothing is clipped to pure white.** Edges and details stay readable.
-- **Ambient occlusion:** soft darkening in recesses, clips, and where parts meet.
-- **Material colors preserved:** parts that are dark stay dark.
-- **Shadow:** one very soft, low-contrast, wide-penumbra shadow beneath the object. No hard edges.
-- **Color:** neutral, no color cast.
-- **Framing:** subject fills roughly 85% of the frame width.
-- **No UI helpers** of any kind in the image.
+1. **Ambient occlusion:** soft darkening where parts meet, inside the clip hooks, under ribs, and in recesses. Open flat areas stay bright.
+2. **Reflections with structure:** glossy and black plastic parts show soft, large, smooth highlights and gradients that clearly come from studio light sources (softboxes), not a flat uniform color.
+3. **Soft, grounded shadow:** wide penumbra, low contrast, no hard black edges.
+4. **Material finish:** plastic has a subtle satin or clear-coat sheen. Edges catch light (Fresnel), so the form reads.
+5. **No clipping, neutral color,** same as `README_FIXES.md` §6 A1 and A2.
 
-## 2. Observed defects
+## 2. Observed state of the current 8K renders (verify, then fix)
 
-### D1. HDRI does not display properly
-**Symptoms** (`current_viewport.png`, `current_render.png`):
-- Background is a smooth, blurry gradient with a dark blob in the middle, not a recognisable environment.
-- Environment intensity defaults to **5.00**, which is far too high.
-- "Transparent Background" and "Show Background" are both ticked, yet the render has an opaque HDRI-like background. These two options contradict each other.
+| # | Observation | Consequence |
+|---|---|---|
+| Q1 | No contact darkening anywhere: clip hooks, comb ribs and panel recesses are shaded only by direct light. | Surfaces look flat and "cut out". Either AO is missing, off, or too weak. |
+| Q2 | The black parts are a uniform dark gray with no highlight gradient. The light parts show no sheen. | The material is rough and/or the environment has no structure to reflect (uniform white or a blurry gradient). A mirror-like finish in a blank environment shows nothing. |
+| Q3 | The shadow is a thin, very dark, hard-edged streak (worst in the second render, bottom-left). | `shadowSoftness` / light-jitter soft shadows are not active, or the catcher opacity is too high. |
+| Q4 | The 1:1 frame leaves roughly two thirds of the image empty. The subject is wide and short. | Most of the 8K pixels are wasted. A tight crop is worth more than extra resolution. |
+| Q5 | The background reads as white. | Confirm which background mode produced these. If it is `transparent`, that is fine. If `solid`, check the color against the expected `#454545`. |
 
-**Likely root causes** (verify each, in this order):
-1. `scene.background` is set to the **PMREM output texture** (`envRT.texture`). PMREM output is a heavily pre-blurred, low-resolution lighting map, so the background looks like a blurry gradient. The visible background must use the **original equirectangular texture**.
-2. The loaded texture has no `mapping = EquirectangularReflectionMapping`, or `.exr` is loaded without `setDataType(HalfFloatType)`, or an HDR/EXR is wrongly tagged as sRGB.
-3. One intensity slider drives both lighting and background brightness, and the default (5.0) overexposes everything.
-4. Rotation is applied to the wrong object, so the HDRI and its reflections disagree.
+## 3. Decision: three quality modes
 
-### D2. Huge X / Y / Z gizmo drawn inside the scene
-**Symptoms:** very large red/green/blue axes with sprite letters "X" and "Z" float around the model in the viewport, out of scale and blurry. This is separate from the small, correct `TransformControls` gizmo at the model pivot.
+Rasterization with environment lighting cannot truly compute occlusion or reflections of the object on itself. Screen-space tricks approximate them. A path tracer computes them physically. So the app gets three explicit modes sharing one scene and one `RenderSettings` object:
 
-**Likely root cause:** a `ViewHelper` (three.js `ViewHelper` is itself an `Object3D`) or an `AxesHelper` was added to the **main scene** with `scene.add(...)`, so it renders at world scale. It may also be a child of the scaled model root and inherit its scale. The orientation widget must be drawn in its **own small corner viewport with its own camera**, never in the scene.
+| Mode | Engine | Use | AO / reflections |
+|---|---|---|---|
+| **Fast** | Current raster pipeline | Viewport and quick exports | Environment reflections, no AO |
+| **High** | Raster plus GTAO plus accumulated soft shadows plus physical materials plus a structured studio environment | Default final render | Good AO, convincing environment reflections |
+| **Ultra** | Path tracer (`three-gpu-pathtracer`) | Beauty renders | Physically correct AO, reflections, soft shadows, light bounce |
 
-### D3. Final render comes out white
-**Symptoms:** the model renders as flat pure white with almost no shading (the viewport is also washed out); only a few colored parts remain visible.
+**Challenge to consider:** for a mostly gray plastic part, the biggest perceived-quality jump comes from AO, soft shadow and a structured environment, **not** from more pixels. 4K cropped to the subject with good lighting will look better than 8K of a flat render. Make High the default and treat Ultra as the "best quality" option, not the default.
 
-**Likely root causes** (several can stack):
-1. Environment intensity 5.0 plus a strong directional light plus ACES tone mapping drives surfaces beyond 1.0.
-2. FBX materials converted to `MeshStandardMaterial` ended up with albedo `(1,1,1)`, roughness near 0 or default, and no ambient occlusion. Pure-white albedo clips immediately under bright lighting.
-3. The offline renderer may not match the viewport. In three.js, **tone mapping and output color-space conversion are applied only when rendering to the canvas, not to a render target.** If the final render draws into a `WebGLRenderTarget` and reads it back, it skips tone mapping and sRGB conversion, so the result differs from the viewport.
-4. The accumulation (anti-aliasing) step may sum samples instead of averaging them, or average already tone-mapped 8-bit values incorrectly.
-5. No ambient occlusion and no soft shadow, so there is nothing to describe form once the light is bright.
+## 4. Required changes
 
-### D4. Smaller issues noticed (fix too)
-- The ground shadow is **hard-edged and appears clipped** at one side. The shadow-camera frustum is too tight, and shadow softness is not applied.
-- The ground plane is a visible surface. It should be a **shadow catcher** so the background stays a clean solid color.
-- The transform gizmo pivot sits at a bottom corner of the model rather than its center-bottom.
-- The properties panel is cut off at the bottom of the window (needs `overflow-y: auto` and a max height).
+### 4.1 Physical materials (needed by every mode)
 
-## 3. Required changes
+- Convert the normalized `MeshStandardMaterial`s to `MeshPhysicalMaterial` (copy all maps and properties).
+- Add a global **Surface finish** preset and a per-material override list in a new "Materials" panel section.
 
-### 3.1 Environment manager: separate lighting from background
+| Preset | roughness | clearcoat | clearcoatRoughness | specularIntensity |
+|---|---|---|---|---|
+| Original (current values) | as imported | 0 | n/a | 1 |
+| Matte plastic | 0.70 | 0 | n/a | 0.8 |
+| **Satin plastic (default)** | 0.45 | 0.15 | 0.35 | 1 |
+| Glossy plastic | 0.25 | 0.6 | 0.1 | 1 |
 
-```ts
-// EnvironmentManager.ts
-async load(file: File | string) {
-  const name = typeof file === 'string' ? file : file.name;
-  const url = typeof file === 'string' ? file : URL.createObjectURL(file);
-  const loader = /\.exr$/i.test(name)
-    ? new EXRLoader().setDataType(THREE.HalfFloatType)
-    : new RGBELoader();            // check import path for the installed three version
-  const tex = await loader.loadAsync(url);
-  tex.mapping = THREE.EquirectangularReflectionMapping;   // linear data: do NOT set sRGB colorSpace
-  if (typeof file !== 'string') URL.revokeObjectURL(url);
+- Add a **Finish** slider (global roughness multiplier 0.3 to 1.5) applied on top of the preset.
+- **Dark materials (black and very dark gray) must use the glossy values by default** regardless of the preset (roughness about 0.28, clearcoat 0.5). Black plastic shows reflections best, and it is the quickest way to make the render look real.
+- Per-material overrides: list each material by name with color, roughness, metalness, clearcoat. Overrides persist while the model stays loaded.
+- Keep the white-albedo clamp from `README_FIXES.md` (§3.3). Do not clamp dark colors upward.
+- Use `ior = 1.46` for plastic. Do not enable transmission unless a material is actually transparent.
 
-  const pmrem = new THREE.PMREMGenerator(this.renderer);
-  const envRT = pmrem.fromEquirectangular(tex);
-  pmrem.dispose();
+### 4.2 Studio environment (reflection quality depends on this)
 
-  this.scene.environment?.dispose?.();
-  this.scene.environment = envRT.texture;   // lighting and reflections ONLY
-  this.backgroundTexture = tex;             // original, sharp texture kept for visible background
-}
+Reflections are only as good as what there is to reflect. Add an **Environment source** selector:
 
-apply(s: RenderSettings) {
-  const sc = this.scene;
-  sc.environmentIntensity = s.environment.intensity;   // default 1.0, range 0..3
-  sc.backgroundIntensity = 1.0;
-  sc.backgroundBlurriness = 0;
-  sc.environmentRotation.y = THREE.MathUtils.degToRad(s.environment.rotation);
-  sc.backgroundRotation.y  = sc.environmentRotation.y;
-
-  switch (s.environment.backgroundMode) {
-    case 'solid':       sc.background = new THREE.Color(s.environment.backgroundColor); this.renderer.setClearAlpha(1); break;
-    case 'hdri':        sc.background = this.backgroundTexture; this.renderer.setClearAlpha(1); break;
-    case 'transparent': sc.background = null; this.renderer.setClearAlpha(0); break;
-  }
-}
-```
-
-### 3.2 Replace the two background checkboxes with one selector
-Remove "Show Background" and "Transparent Background". Add a single **Background** dropdown:
-
-| Mode | Behaviour |
+| Source | Behaviour |
 |---|---|
-| `solid` (default, `#454545`, color picker) | HDRI lights the scene but is invisible. Matches the expected image. |
-| `hdri` | Sharp original HDRI visible, with a blur slider (0 to 1). |
-| `transparent` | PNG with alpha. Only the shadow remains semi-transparent. |
+| **Procedural studio (default)** | A small scene of emissive rectangular softboxes on a dark gray room, converted to an environment with `PMREMGenerator.fromScene`. |
+| Room | three's `RoomEnvironment`, as a quick fallback. |
+| HDRI file | User-loaded `.hdr` / `.exr`, as already implemented. |
 
-The viewport and the final render must honour the same mode. For `transparent`, make sure the whole final pipeline preserves alpha (see §3.8).
+Procedural studio requirements:
+- Default layout: one large key softbox (upper left), one strip light (right), one dim fill (low front), each emissive with intensities above 1 so reflections have real contrast.
+- Panel controls: for each softbox position/azimuth, elevation, width, height, intensity, color. Add and remove softboxes (max 6).
+- Environment visibility is independent from the background: the studio lights the scene and appears in reflections while the background stays `solid` / `transparent` (see `README_FIXES.md` §3.2).
+- Ship 2 to 3 small CC0 studio HDRIs (2K, for example from Poly Haven; record source and license in `docs/CREDITS.md`) so the HDRI option has good content out of the box. Do not downscale a loaded HDRI below 2K.
+- The same environment must feed all three modes (for Ultra, convert it to an equirectangular texture, or add the softboxes as emissive meshes; check what the path tracer supports).
 
-### 3.3 Material normalization at import (`FBXImporter.ts`)
-Convert every FBX material to `MeshStandardMaterial` with sane PBR defaults:
+### 4.3 AO and soft shadows in the High mode
 
-- Keep `color`, `map`, `normalMap` (FBX often stores normals in `bumpMap`; keep it as bump if no normal map), `aoMap`, `emissive`, `emissiveMap`, `opacity`/`transparent`, `side`, `name`, vertex colors.
-- Defaults when unknown: `metalness = 0`, `roughness = 0.55`. Use source roughness/metalness maps if they exist.
-- Albedo/color maps: `colorSpace = SRGBColorSpace`; data maps (normal, roughness, AO): leave linear. Set `anisotropy` from the atlas-quality setting.
-- **Albedo clamp (setting, default ON, max 0.85):** if a material's color is near pure white (all channels > 0.9) and has no `map`, multiply color by `0.85`. Real white plastic reflects about 80 to 90 percent, and a perfect 1.0 clips under any bright light. Expose it as "Clamp white albedo" in the panel.
-- Log a `console.table` of all materials at import (name, original type, color hex, which maps exist). This is needed for debugging.
+First check what already exists from the previous pass and what is actually active. If GTAO is already wired in and the effect is invisible, find out why before adding anything new (usual causes: radius far too small or large for the model scale, intensity too low, AO pass output not blended, pass skipped in the offline path).
 
-### 3.4 Lighting and exposure defaults
-- Tone mapping default: `THREE.NeutralToneMapping` (Khronos PBR Neutral), which preserves material colors better than ACES. Keep AgX and ACES as options.
-- `exposure = 1.0`, `environmentIntensity = 1.0`.
-- Default key light: directional, intensity about `2.0`, azimuth 35°, elevation 45°. No extra ambient light. The HDRI provides fill.
-- Add a **"Studio Soft" preset** with these values and make it the startup default. Provide "Reset lighting".
-- Add an **Auto exposure** button: render a small low-res frame, measure the model-region median luminance, and set exposure so the median lands near 0.75 (sRGB). Optional but useful.
+- **GTAO** (`GTAOPass`) in the offline renderer, enabled in High mode. Radius is relative to model size: default about 2% of the bounding-box diagonal (slider 0.5% to 6%). Intensity slider 0 to 2, default 1.
+- **Tile overscan is mandatory** for any screen-space effect: render each tile with padding (default 128 px at 8K, at least twice the AO radius in pixels) and crop it when stitching. Verify with test A6.
+- AO is applied to ambient/environment lighting only where the library allows it. If it can only multiply the final color, keep the intensity moderate so direct highlights are not crushed.
+- **Soft shadows by accumulation:** per sample, jitter the light direction inside a cone of `shadowSoftness` degrees (Vogel disc or Halton, deterministic). Default softness 4°. Combine with a catcher opacity of 0.3 (see Q3). The shadow penumbra must scale with the distance from the occluder to the ground, which jittering gives for free.
+- Optional but recommended: a faint **contact shadow** (very short-radius occlusion where an object touches the ground) so a grounded subject does not float.
+- **Reflection quality:** use the PMREM from §4.2 with `environmentIntensity` default 1.0. Do not use `envMapIntensity` hacks per material except through the override list.
+- Both AO and soft shadows are final-render features. The viewport keeps cheap shadows and optional low-quality AO (toggle, default off).
 
-### 3.5 Shadows
-- **Shadow catcher:** replace the visible ground with `ShadowMaterial({ opacity: 0.35 })` on a large plane (about 8x the model footprint) at `y = bbox.min.y - groundOffset`. Add a `Ground offset` slider (default 0). Add a `Shadow opacity` slider.
-- **Frustum fit:** compute the model bounding box corners in light space and size the shadow camera to them **plus 25% margin**, so shadows are never clipped. Re-fit whenever the light or model transform changes.
-- `shadow.bias ≈ -0.0005`, `shadow.normalBias ≈ 0.02 × modelSize`. Tune on the model to avoid acne and peter-panning.
-- **Soft shadows in the final render via light jitter:** for each accumulation sample `i` of `N`, offset the light direction inside a cone of `shadowSoftness` degrees (use a Vogel disc or Halton sequence, deterministic per sample). Averaging the samples produces a smooth penumbra for free. In the viewport use `PCFSoftShadowMap` with a modest `shadow.radius`.
+### 4.4 Ultra mode: path tracing (`three-gpu-pathtracer`)
 
-### 3.6 Ambient occlusion (needed to match the expected look)
-- Add **GTAO** (`GTAOPass` from three examples) to the **final render only**, via `EffectComposer`. Viewport AO is an optional toggle, default off.
-- Panel controls: AO on/off, radius, intensity.
-- **Critical:** screen-space AO samples outside the tile and creates visible **seams** on tile borders. Render each tile with **overscan padding** (default 96 px, at least 2x the AO radius in pixels) via `setViewOffset` on the enlarged region, then **crop** the padding when stitching.
-- If GTAO quality or performance at 8K is poor, cap AO at 4K and say so in the UI.
+Add an **Ultra** option in the Quality section. It uses the `three-gpu-pathtracer` library (check its README and `examples` folder inside `node_modules` for the exact API of the installed version; **do not guess property names**).
 
-### 3.7 Helpers and gizmos
-- Find and remove any `scene.add(viewHelper)`, `AxesHelper`, or sprite-label axes in the main scene. Search the codebase for `ViewHelper`, `AxesHelper`, and any sprite with text "X", "Y", "Z".
-- Orientation widget: use `ViewHelper` correctly, drawn after the main render into a corner viewport:
+Integration requirements:
+1. Pin compatible versions of `three`, `three-mesh-bvh` and `three-gpu-pathtracer` (read their peer dependency ranges). Record the choice in `DECISIONS.md`. If the installed `three` conflicts, use the version range the library supports rather than patching the library.
+2. Build the path-traced scene from the **same** scene object (model, lights, environment, ground). Sync material, light, camera and environment changes into the tracer when settings change.
+3. Build the BVH **asynchronously** with progress reported to the loading overlay (use the library's async scene setup and its worker support if available). The BVH build can freeze the page on heavy FBX files.
+4. Settings (defaults): samples preset **Draft 64 / Good 256 / Final 1024**, bounces 5, glossy filtering about 0.5 to suppress fireflies, multiple importance sampling on.
+5. Progressive display: show the path-traced image converging in the viewport (small preview) and a progress bar `sample 112/256` with Cancel. Cancel must free all GPU resources.
+6. **Memory and 8K strategy** (important): an 8K float target is roughly 530 MB (7680 x 4320) to 940 MB (1:1) and will fail on many GPUs.
+   - Query the safe maximum macro-tile size from `renderer.capabilities` and a small allocation probe.
+   - Render each **macro tile** (default 2048 or 4096 px, whichever is safe) to completion by using `camera.setViewOffset(...)` and updating the tracer camera, read it back, and stitch it into the final canvas exactly like the existing tiler.
+   - If the library does not honour view offsets, fall back to rendering at the largest safe size and tell the user the output was capped, with a clear message. Do not silently upscale.
+   - Path tracing has no screen-space effects, so there are no AO seams, but verify the macro-tile borders anyway (A6).
+7. **Tone mapping and color:** apply the same tone mapping and exposure as High mode in a final output step so the two modes look alike. Check `README_FIXES.md` §3.8 for the render-target tone mapping caveat.
+8. **Background and alpha:** support `solid` mode. If the library cannot produce a clean shadow catcher for `transparent` mode, use a large matte ground plane whose color equals the solid background color, and disable `transparent` for Ultra with a note in the UI. Do not ship a broken transparent mode.
+9. Show an estimated time after the first few samples (based on measured sample rate) before the user commits to a long Final render.
+10. Do not add an external denoiser. If the library ships a simple denoise pass, expose it as a toggle; otherwise rely on sample count.
+
+### 4.5 Framing: stop wasting pixels
+
+- Add a **Frame to subject** button and a **Fit margin** setting (default 6% of the frame). It sets the camera distance so the model's projected bounding box fills the frame minus margins for the current aspect ratio.
+- Add an **Auto aspect** option: pick the aspect ratio closest to the subject's projected bounding box (for example 3:1 or 16:9 for wide parts).
+- Keep the safe-frame overlay in sync. The final render must match the safe frame exactly.
+
+### 4.6 UI additions (Quality section)
+
+- Quality mode: Fast / High / Ultra (default High).
+- High: AO on/off, AO radius, AO intensity, shadow softness, shadow opacity, samples (16/64/256).
+- Ultra: samples preset, bounces, glossy filter, estimated time.
+- Materials: preset, Finish slider, per-material overrides.
+- Environment: source selector, softbox editor, HDRI picker.
+- Framing: Frame to subject, margin, Auto aspect.
+- Show a small caption of what each mode costs (for example "Ultra: slow, physically accurate").
+
+## 5. Settings changes (`types/settings.ts`)
 
 ```ts
-const viewHelper = new ViewHelper(camera, renderer.domElement);  // NOT added to the scene
-// in the render loop, after renderer.render(scene, camera):
-renderer.autoClear = false;
-viewHelper.render(renderer);
-renderer.autoClear = true;
-```
-
-- `TransformControls`: keep it, but set a fixed on-screen `size` (about 0.8) and make sure it is **not** a child of the scaled model root.
-- **Helper registry:** keep every helper object (transform gizmo, grid, shadow-camera helper, safe frame, etc.) in one `HelperRegistry`. `OfflineRenderer` must hide all of them before rendering and restore them after, including on cancel or error (`try/finally`). The final image must never contain a helper.
-- Pivot: place the model root's origin at the **bottom-center of its bounding box**, so the gizmo sits there.
-
-### 3.8 Offline renderer consistency (`OfflineRenderer.ts`)
-- Use the **same** tone mapping, exposure, environment, light, shadow and AO settings as the viewport. Build both from the same `RenderSettings` through one shared `applyRenderSettings(renderer, scene, camera, settings)` function so they cannot drift.
-- **Preferred pipeline:** accumulate in a half-float render target in **linear** space with weights `1/N`, then run a final `OutputPass` (tone mapping plus sRGB conversion) on the averaged result before reading pixels. This avoids tone-mapping or averaging in the wrong space.
-- **Acceptable fallback for the prototype:** render each sample straight to the offscreen renderer's canvas (tone mapped), copy it with `drawImage` into the accumulation canvas using `globalAlpha = 1/(i+1)`. State this choice in `DECISIONS.md`.
-- Anti-aliasing jitter must be **sub-pixel** (offset the `setViewOffset` origin by a fraction of a pixel per sample).
-- **Alpha:** in `transparent` mode keep premultiplied alpha through accumulation and export (`WebGLRenderer({ alpha: true })`, `premultipliedAlpha` handled consistently, PNG with alpha). Only the shadow should be semi-transparent.
-- Run a **self-check before export:** render a 64x64 test at N=1 and N=16 and assert the mean luminance differs by less than 1%. If not, show an error instead of exporting a broken image.
-
-## 4. Settings changes (`types/settings.ts`)
-
-```ts
-environment: {
-  hdri: string;
-  intensity: number;            // default 1.0
-  rotation: number;
-  backgroundMode: 'solid' | 'hdri' | 'transparent';   // default 'solid'
-  backgroundColor: string;      // default '#454545'
-  backgroundBlur: number;       // hdri mode only
+quality: {
+  mode: 'fast' | 'high' | 'ultra';        // default 'high'
+  pixelQuality: 1 | 4 | 16 | 64 | 256;    // raster samples
+  atlasQuality: 'low' | 'medium' | 'high' | 'ultra';
+  resolution: '1k' | '2k' | '4k' | '8k' | 'custom';
 };
-materials: { clampWhiteAlbedo: boolean; albedoMax: number };   // true, 0.85
-shadow:   { opacity: number; groundOffset: number; softness: number };  // 0.35, 0, 3
-ao:       { enabled: boolean; radius: number; intensity: number };       // final render on
-camera:   { toneMapping: 'Neutral' | 'AgX' | 'ACES' | 'None' };         // default 'Neutral'
+ao:       { enabled: boolean; radiusPct: number; intensity: number; overscanPx: number };  // true, 2, 1, 128
+shadow:   { opacity: number; softness: number; groundOffset: number; contact: boolean };  // 0.3, 4, 0, true
+materials:{ preset: 'original' | 'matte' | 'satin' | 'glossy'; finish: number;
+            darkGlossy: boolean; overrides: Record<string, MaterialOverride> };           // 'satin', 1, true
+studio:   { source: 'procedural' | 'room' | 'hdri'; softboxes: Softbox[] };                // 'procedural'
+pathTracer: { samples: 64 | 256 | 1024; bounces: number; glossyFilter: number;
+              macroTilePx: 'auto' | 2048 | 4096 };                                        // 256, 5, 0.5, 'auto'
+framing:  { fitToSubject: boolean; marginPct: number; autoAspect: boolean };              // false, 6, false
 ```
-
-Remove `showBackground` and `transparentBackground` and migrate any code using them.
-
-## 5. Default look ("Studio Soft")
-
-| Setting | Value |
-|---|---|
-| Background | solid `#454545` |
-| Environment intensity | 1.0 |
-| Key light | directional, 2.0, azimuth 35°, elevation 45°, softness 3° |
-| Tone mapping / exposure | Neutral / 1.0 |
-| White albedo clamp | on, 0.85 |
-| Shadow catcher opacity | 0.35 |
-| AO (final render) | on |
-| Pixel quality (final) | 16 samples |
 
 ## 6. Acceptance tests
 
-Load the same FBX used in `current_render.png` and render at 2K, 4K and (if the GPU allows) 8K.
+Use the same FBX as `render_8k_*.png`. Render at 4K (and 8K where the GPU allows).
 
-- [ ] **A1 Exposure:** in the model region, at most 1% of pixels are at or above 250 (8-bit) and the median luminance is roughly 170 to 225. The form is readable: visible shading gradient on large surfaces.
-- [ ] **A2 Background:** in `solid` mode the four corners of the render are `#454545` within ±2. In `transparent` mode the corners have alpha 0.
-- [ ] **A3 No helpers:** the final PNG contains no gizmo, axes, grid, or safe-frame pixels. `HelperRegistry` reports all helpers hidden during the render and restored afterwards (also after a cancel).
-- [ ] **A4 Gizmo:** the viewport shows only the small transform gizmo at the model's bottom-center, plus the orientation widget in the corner. No oversized axes anywhere.
-- [ ] **A5 HDRI:** with `hdri` mode on, the background is sharp and recognisable. Rotating the HDRI moves the reflections on glossy parts consistently with the background. With `solid` mode, reflections still show the HDRI.
-- [ ] **A6 Shadow:** the shadow is soft, not clipped, with no hard straight edge, and has a visible penumbra.
-- [ ] **A7 AO:** recesses and part junctions are visibly darker than open surfaces.
-- [ ] **A8 Consistency:** a 1K render and the viewport (downscaled) have mean luminance within 5% of each other. N=1 and N=64 renders have mean luminance within 1%.
-- [ ] **A9 Seams:** a 4K render with 512 px tiles and one with 2048 px tiles differ by less than 1 level on average, with no visible seams.
-- [ ] **A10 Side by side:** put `expected.jpeg` and the new render next to each other and report the remaining visible differences honestly in `DECISIONS.md`.
+- [ ] **A1 AO visible:** choose patches at the base of a clip hook and an open flat area nearby. With AO on, the recess patch is at least 12% darker than with AO off, and the open patch changes by less than 2%.
+- [ ] **A2 Reflections:** in the glossy-dark preset, a black part region has a luminance standard deviation of at least 6 levels (a visible highlight gradient). With the Matte preset it is visibly lower. Report the numbers.
+- [ ] **A3 Shadow:** the shadow penumbra is at least 1.5% of the model width and the darkest shadow pixel is not pure black (at most 75% darkening on a light background).
+- [ ] **A4 Finish:** switching Matte, Satin and Glossy changes highlights without changing the base color or clipping the exposure (A1 and A2 from `README_FIXES.md` §6 still pass).
+- [ ] **A5 Environment:** moving a softbox moves the reflections on the glossy parts accordingly. The background stays solid.
+- [ ] **A6 Seams:** 8K output rendered with two different tile sizes differs by less than 1 level on average, with no visible seams in High and Ultra.
+- [ ] **A7 Convergence (Ultra):** two independent 256-sample renders differ by an RMS of at most 3 levels in a flat region. Draft is visibly noisier than Final, Final is clean.
+- [ ] **A8 Mode consistency:** the model-region median luminance of High and Ultra renders is within 10%, so switching mode changes realism, not exposure.
+- [ ] **A9 Framing:** Frame to subject places the subject's bounding box within the margin on all sides. A wide part rendered at the auto aspect uses at least 60% of the frame area.
+- [ ] **A10 Resource safety:** 8K Ultra either completes through macro tiles or stops with a clear "capped at X" or "not enough GPU memory" message. It never hangs the tab, and Cancel frees memory (no growth over 3 render/cancel cycles).
+- [ ] **A11 Side by side:** compare each mode with `expected.jpeg` and list remaining differences honestly in `DECISIONS.md`.
 
-## 7. Debug tools to add (`?debug=1`)
+## 7. Debug tools (extend `?debug=1`)
 
-- **Equirect viewer:** shows the raw loaded HDRI as a flat image, and logs its width, height, data type, mapping, and color space. Use it to confirm D1 cause #2.
-- **Histogram overlay** of the last render, with the clipped-pixel percentage.
-- **Material table** (see §3.3) and a list of all registered helpers.
-- **Render config dump** printing the exact renderer, tone mapping, exposure, and accumulation settings used by both the viewport and the offline renderer, to expose any mismatch (D3 causes #3 and #4).
+- AO-only view (output the occlusion buffer) and a reflection-only view (environment contribution only).
+- Environment viewer: show the PMREM / equirect texture the model is actually using, plus softbox layout.
+- Path-tracer stats: samples/sec, macro tile size, memory estimate, BVH build time.
+- Render config dump per mode (tone mapping, exposure, AO params, jitter cone, samples) to catch High-versus-Ultra drift.
 
-## 8. Order of work
+## 8. Non-goals
 
-1. Add the debug tools (§7) and reproduce D1, D2, D3. Record the confirmed root causes in `DECISIONS.md`.
-2. Fix helpers and the orientation widget (§3.7). This is the easiest win.
-3. Environment manager and background modes (§3.1, §3.2, §4).
-4. Material normalization and the lighting and exposure defaults (§3.3, §3.4). This alone should cure most of the white-out.
-5. Shadow catcher, frustum fit, and soft shadows (§3.5).
-6. Offline renderer consistency and alpha (§3.8).
-7. AO with tile overscan (§3.6).
-8. Panel overflow fix and pivot placement. Run all tests in §6.
+- Caustics, subsurface scattering, volumetrics, motion blur, animation
+- Cloud or server-side rendering
+- External denoiser binaries or heavyweight dependencies beyond `three-gpu-pathtracer` and its peer libraries
+- A material editor with texture painting
 
-## 9. Honest expectation and fallback
+## 9. Order of work
 
-`expected.jpeg` looks like it came from a ray-traced or global-illumination renderer. Rasterized PBR with image-based lighting, AO, and accumulated soft shadows can get close but will not reproduce inter-object light bounce exactly. If after §8 the result is still clearly flatter than the reference (A10), do **not** keep tuning blindly. Report it, and propose an optional **Path Trace** mode using `three-gpu-pathtracer` as the next phase. Do not implement it in this pass.
+1. Add the debug views and reproduce Q1 to Q5. Note which pieces from `README_FIXES.md` are already active.
+2. Physical materials, presets and the Materials panel (§4.1). Visible improvement on black parts immediately.
+3. Procedural studio environment and softbox editor (§4.2).
+4. Soft shadows by light jitter and catcher tuning (§4.3, fixes Q3).
+5. GTAO with overscan padding (§4.3, fixes Q1). Run A1 and A6.
+6. Frame to subject and Auto aspect (§4.5, fixes Q4).
+7. Ultra mode (§4.4): integration, async BVH, macro tiles, progress, cancel, consistency.
+8. UI polish, time estimates, tests A1 to A11, update the project README.
 
-## 10. Definition of done
+## 10. Honest expectations
 
-- [ ] D1, D2, D3 and D4 are all reproduced and then verified fixed
-- [ ] Acceptance tests A1 to A9 pass, A10 is documented
-- [ ] `npm run build` passes with no TypeScript errors and no console errors at runtime
-- [ ] `DECISIONS.md` records confirmed root causes and every assumption
-- [ ] No regressions in import, gizmo transforms, camera bookmarks, or the loading overlay
+- High mode will look clearly better than the current renders (AO, structured reflections, soft shadow) but it still **approximates** occlusion and cannot reflect the object in itself.
+- Ultra mode gives physically correct results but is slow, and 8K may be limited by GPU memory. A good laptop GPU should handle 4K Final in minutes; 8K will take much longer, and the app must say so before starting.
+- If Ultra proves too slow or unstable in the browser on the target hardware, report the measurements in `DECISIONS.md` instead of hiding it, and propose a desktop path (for example Filament or a native renderer) as a later phase.
+
+## 11. Definition of done
+
+- [ ] Fast, High and Ultra modes selectable, each completing a 4K render
+- [ ] A1 to A10 pass, A11 documented
+- [ ] No regression in import, tiling, helper hiding, camera bookmarks or the loading overlay
+- [ ] `npm run build` passes with no TypeScript errors and no console errors
+- [ ] `DECISIONS.md` lists library versions, assumptions and measured render times

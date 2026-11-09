@@ -20,7 +20,7 @@ function getOutputSize(settings: RenderSettings): { w: number; h: number } {
     return { w: q.customWidth, h: q.customHeight };
   }
   const longEdge = RESOLUTION_MAP[q.resolution] ?? 2048;
-  const [aw, ah] = ASPECT_MAP[q.aspectRatio as string] ?? [1, 1];
+  const [aw, ah] = ASPECT_MAP[q.aspectRatio as string] ?? [16, 9];
   if (aw >= ah) {
     return { w: longEdge, h: Math.round(longEdge * ah / aw) };
   } else {
@@ -72,12 +72,24 @@ export class OfflineRenderer {
     renderer.getClearColor(origClearColor);
     const origClearAlpha = renderer.getClearAlpha();
     const origBg = scene.background;
+    const origShadowType = renderer.shadowMap.type;
+
+    // Find main directional light for area-light shadow accumulation
+    let foundDirLight: THREE.DirectionalLight | null = null;
+    scene.traverse((obj) => {
+      if (!foundDirLight && obj instanceof THREE.DirectionalLight && obj.castShadow) {
+        foundDirLight = obj;
+      }
+    });
+    const dirLight: THREE.DirectionalLight | null = foundDirLight;
+    const origLightPos = dirLight ? (dirLight as THREE.DirectionalLight).position.clone() : null;
 
     // Configure renderer for final render
     const { toneMapping: tm, exposure } = settings.camera;
     renderer.toneMapping = TONE_MAP[tm] ?? THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = exposure;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.type = THREE.VSMShadowMap; // smooth VSM shadow map
     renderer.setPixelRatio(1);
     renderer.setRenderTarget(null);
 
@@ -103,6 +115,10 @@ export class OfflineRenderer {
     const totalTiles = tilesX * tilesY;
     const samples = settings.quality.pixelQuality;
 
+    // Area-light jitter simulation radius based on shadowSoftness
+    const shadowSoftness = settings.light.shadowSoftness;
+    const lightJitterRadius = (samples > 1 && shadowSoftness > 1) ? (shadowSoftness * 0.25) : 0;
+
     const stitcher = new TileStitcher(fullW, fullH);
     let tileIdx = 0;
 
@@ -127,6 +143,7 @@ export class OfflineRenderer {
           for (let s = 0; s < samples; s++) {
             if (this._cancelled) break;
 
+            // Camera sub-pixel spatial jitter
             const jx = samples > 1 ? (Math.random() - 0.5) : 0;
             const jy = samples > 1 ? (Math.random() - 0.5) : 0;
 
@@ -136,6 +153,23 @@ export class OfflineRenderer {
                 tileX + jx, tileY + jy,
                 curW, curH,
               );
+            }
+
+            // Light position jitter: simulates physically true area light penumbra
+            if (lightJitterRadius > 0 && dirLight && origLightPos) {
+              const dl = dirLight as THREE.DirectionalLight;
+              if (s === 0) {
+                dl.position.copy(origLightPos);
+              } else {
+                const ang = Math.random() * Math.PI * 2;
+                const rad = Math.sqrt(Math.random()) * lightJitterRadius;
+                dl.position.set(
+                  origLightPos.x + rad * Math.cos(ang),
+                  origLightPos.y + rad * Math.sin(ang) * 0.4,
+                  origLightPos.z + rad * Math.sin(ang)
+                );
+              }
+              dl.updateMatrixWorld();
             }
 
             renderer.clear();
@@ -172,12 +206,20 @@ export class OfflineRenderer {
     } catch (err) {
       onError?.(err as Error);
     } finally {
+      // Restore light position
+      if (dirLight && origLightPos) {
+        const dl = dirLight as THREE.DirectionalLight;
+        dl.position.copy(origLightPos);
+        dl.updateMatrixWorld();
+      }
+
       // Restore renderer to original viewport state
       renderer.setSize(origSize.x, origSize.y, false);
       renderer.setPixelRatio(origPixelRatio);
       renderer.toneMapping = origToneMapping;
       renderer.toneMappingExposure = origExposure;
       renderer.outputColorSpace = origOutputColorSpace;
+      renderer.shadowMap.type = origShadowType;
       renderer.setClearColor(origClearColor, origClearAlpha);
       scene.background = origBg;
     }

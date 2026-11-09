@@ -22,6 +22,10 @@ export interface RenderSettings {
     rotation: number;
     showBackground: boolean;
   };
+  material: {
+    roughness: number;
+    metalness: number;
+  };
   quality: {
     atlasQuality: AtlasQuality;
     pixelQuality: PixelQuality;
@@ -30,6 +34,8 @@ export interface RenderSettings {
     customWidth: number;
     customHeight: number;
     transparentBackground: boolean;
+    ambientOcclusion: boolean;
+    aoIntensity: number;
   };
   camera: {
     mode: CameraMode;
@@ -47,28 +53,34 @@ export const DEFAULT_SETTINGS: RenderSettings = {
     color: '#ffffff',
     intensity: 1.5,
     azimuth: 45,
-    elevation: 60,
-    shadowSoftness: 1.5,
+    elevation: 50,
+    shadowSoftness: 3.0,
     groundVisible: true,
   },
   environment: {
     hdri: '/hdri/default.hdr',
-    intensity: 0.8,
+    intensity: 1.0,
     rotation: 0,
     showBackground: true,
   },
+  material: {
+    roughness: 0.35,
+    metalness: 0.05,
+  },
   quality: {
-    atlasQuality: 'medium',
-    pixelQuality: 1,
+    atlasQuality: 'high',
+    pixelQuality: 4,
     resolution: '2k',
-    aspectRatio: '1:1',
+    aspectRatio: '16:9',
     customWidth: 1920,
     customHeight: 1080,
     transparentBackground: false,
+    ambientOcclusion: true,
+    aoIntensity: 1.5,
   },
   camera: {
     mode: 'perspective',
-    fov: 45,
+    fov: 40,
     near: 0.01,
     far: 1000,
     exposure: 1.0,
