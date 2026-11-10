@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { appState } from '../app/state';
+import { showToast } from '../ui/toast';
 
 export class EnvironmentManager {
   private _scene: THREE.Scene;
@@ -20,15 +22,58 @@ export class EnvironmentManager {
     appState.subscribe(s => this._applySettings(s.environment));
   }
 
-  async loadHDRI(url: string): Promise<void> {
+  async loadHDRI(url: string, fileName = ''): Promise<void> {
     if (url === this._currentHdri) return;
     this._currentHdri = url;
-    try {
-      const loader = new RGBELoader();
-      const texture = await loader.loadAsync(url);
-      texture.mapping = THREE.EquirectangularReflectionMapping;
 
-      // Keep original sharp texture for background
+    const lowerName = (fileName || url).toLowerCase();
+    const isExr = lowerName.endsWith('.exr') || lowerName.includes('.exr');
+
+    let texture: THREE.Texture | null = null;
+    let loadErr: Error | null = null;
+
+    if (isExr) {
+      // Try EXR loader first
+      try {
+        const loader = new EXRLoader();
+        texture = await loader.loadAsync(url);
+      } catch (err) {
+        // Fallback to RGBELoader just in case
+        try {
+          const rgbe = new RGBELoader();
+          texture = await rgbe.loadAsync(url);
+        } catch {
+          loadErr = err as Error;
+        }
+      }
+    } else {
+      // Try RGBE (HDR) loader first
+      try {
+        const loader = new RGBELoader();
+        texture = await loader.loadAsync(url);
+      } catch (err) {
+        // Fallback to EXRLoader if RGBE fails (e.g. user selected .exr with blob URL)
+        try {
+          const exr = new EXRLoader();
+          texture = await exr.loadAsync(url);
+        } catch {
+          loadErr = err as Error;
+        }
+      }
+    }
+
+    if (!texture) {
+      console.error('Failed to parse HDRI/EXR file:', loadErr);
+      showToast(`Failed to load ${fileName || 'HDRI'}: ${(loadErr as Error)?.message || 'Format unsupported'}`, 'error');
+      this._useFallbackEnv();
+      return;
+    }
+
+    try {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      texture.needsUpdate = true;
+
+      // Keep original sharp texture for visible skybox
       this._sharpTexture?.dispose();
       this._sharpTexture = texture;
 
@@ -38,8 +83,13 @@ export class EnvironmentManager {
       this._envTexture = envMap;
 
       this._applySettings(appState.settings.environment);
-    } catch {
-      console.warn('HDRI not found, using procedural environment:', url);
+
+      if (fileName) {
+        showToast(`Loaded environment: ${fileName}`, 'success');
+      }
+    } catch (e) {
+      console.error('PMREM generation error:', e);
+      showToast(`Error processing environment map: ${(e as Error).message}`, 'error');
       this._useFallbackEnv();
     }
   }
@@ -67,7 +117,7 @@ export class EnvironmentManager {
 
     // Apply background
     if (env.showBackground && this._sharpTexture) {
-      // Real loaded HDRI: show crisp equirectangular skybox
+      // Real loaded HDRI / EXR: show crisp equirectangular skybox
       this._scene.background = this._sharpTexture;
       this._scene.backgroundRotation = new THREE.Euler(0, THREE.MathUtils.degToRad(env.rotation), 0);
     } else {

@@ -168,7 +168,7 @@ export class Panel {
       if (file) {
         const url = URL.createObjectURL(file);
         appState.update(s => { s.environment.hdri = url; });
-        window.dispatchEvent(new CustomEvent('hdri-changed', { detail: { url } }));
+        window.dispatchEvent(new CustomEvent('hdri-changed', { detail: { url, fileName: file.name } }));
       }
     });
 

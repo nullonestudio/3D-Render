@@ -13,20 +13,7 @@ import { Toolbar } from '../ui/Toolbar';
 import { appState } from './state';
 import { commandStack } from './commands';
 
-// Simple toast utility
-function showToast(msg: string, type: 'info' | 'error' | 'success' = 'info', duration = 4000): void {
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    document.body.appendChild(container);
-  }
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.textContent = msg;
-  container.appendChild(toast);
-  setTimeout(() => toast.remove(), duration);
-}
+import { showToast } from '../ui/toast';
 
 export class App {
   private _viewportRenderer: ViewportRenderer;
@@ -131,8 +118,8 @@ export class App {
 
     // ---- HDRI change event ----
     window.addEventListener('hdri-changed', (e: Event) => {
-      const url = (e as CustomEvent).detail?.url;
-      if (url) this._envManager.loadHDRI(url);
+      const detail = (e as CustomEvent).detail;
+      if (detail?.url) this._envManager.loadHDRI(detail.url, detail.fileName);
     });
 
     // ---- Frame model event ----
